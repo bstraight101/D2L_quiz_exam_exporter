@@ -17,21 +17,19 @@ This app allows faculty to upload `.docx` or `.pdf` files formatted with exam/qu
 4. Separate each question block with **one blank line**
 
 #### ✅ Example:
-```
-1. What is the capital of France?
+1.What is the capital of France?
 A) Berlin
 B) Madrid
 C) Paris
 D) Rome
 Answer: C
-```
 
 ### 🧼 Document Cleanup Tips:
 - Use **Ctrl+H** to find and replace `^p^p` with `^p` in Word
 - Remove double spaces with **Find:  ␣␣  Replace: ␣**
 - Convert PDFs to `.docx` for better accuracy
-
 """)
+
 uploaded_file = st.file_uploader("Upload .docx or .pdf file", type=["docx", "pdf"])
 
 def extract_text_from_docx(file):
@@ -71,32 +69,34 @@ def parse_questions(raw_text):
     return questions
 
 if uploaded_file:
-    with st.spinner("Processing file..."):
-        ext = uploaded_file.name.split(".")[-1].lower()
-        raw_text = ""
-        if ext == "docx":
-            raw_text = extract_text_from_docx(uploaded_file)
-        elif ext == "pdf":
-            raw_text = extract_text_from_pdf(uploaded_file)
-        else:
-            st.error("Unsupported file type.")
-        
-        all_qs = parse_questions(raw_text)
-        error_blocks = [q[1] for q in all_qs if isinstance(q, tuple)]
-        valid_qs = [q for q in all_qs if isinstance(q, list)]
+    if st.button("🚀 Submit and Process File"):
+        with st.spinner("Processing file..."):
+            ext = uploaded_file.name.split(".")[-1].lower()
+            raw_text = ""
+            if ext == "docx":
+                raw_text = extract_text_from_docx(uploaded_file)
+            elif ext == "pdf":
+                raw_text = extract_text_from_pdf(uploaded_file)
+            else:
+                st.error("Unsupported file type.")
+                st.stop()
 
-        if error_blocks:
-            st.warning("Some questions had formatting issues:")
-            for e in error_blocks:
-                st.code(e)
+            all_qs = parse_questions(raw_text)
+            error_blocks = [q[1] for q in all_qs if isinstance(q, tuple)]
+            valid_qs = [q for q in all_qs if isinstance(q, list)]
 
-        if valid_qs:
-            rows = [row for group in valid_qs for row in group]
-            df = pd.DataFrame(rows, columns=["Question", "Points", "Answer Text"])
-            st.success("✅ Parsed questions preview:")
-            st.dataframe(df, use_container_width=True)
+            if error_blocks:
+                st.warning("Some questions had formatting issues:")
+                for e in error_blocks:
+                    st.code(e)
 
-            tmp_download = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
-            df.to_csv(tmp_download.name, index=False)
-            with open(tmp_download.name, "rb") as f:
-                st.download_button("⬇️ Download CSV for D2L", f, file_name="d2l_quiz_export.csv", mime="text/csv")
+            if valid_qs:
+                rows = [row for group in valid_qs for row in group]
+                df = pd.DataFrame(rows, columns=["Question", "Points", "Answer Text"])
+                st.success("✅ Parsed questions preview:")
+                st.dataframe(df, use_container_width=True)
+
+                tmp_download = tempfile.NamedTemporaryFile(delete=False, suffix=".csv")
+                df.to_csv(tmp_download.name, index=False)
+                with open(tmp_download.name, "rb") as f:
+                    st.download_button("⬇️ Download CSV for D2L", f, file_name="d2l_quiz_export.csv", mime="text/csv")
