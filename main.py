@@ -10,14 +10,24 @@ st.set_page_config(page_title="D2L Quiz and Exam CSV Exporter", layout="wide")
 st.title("📤 D2L Quiz and Exam CSV Exporter")
 
 st.markdown("""
-This app allows faculty to upload `.docx` or `.pdf` files formatted with exam/quiz questions and export a **D2L-compliant CSV**.
+Upload a `.docx` or `.pdf` file to generate a D2L-importable CSV for quizzes or exams.
 
-### ✅ Format Tips:
-- Separate questions with one **blank line**.
-- Each block must include:
-    - A question
-    - 2 or more choices (no need to label)
-    - Last line as `Answer C` or `Answer: C` to mark correct
+### ✅ Format Instructions
+- Separate each question block with a **blank line**
+- Multiple Choice / True-False example:
+    ```
+    What is the capital of France?
+    Berlin
+    Madrid
+    Paris
+    Rome
+    Answer: C
+    ```
+- Fill-in-the-blank example:
+    ```
+    Who developed the theory of relativity?
+    Answer: Einstein
+    ```
 """)
 
 uploaded_file = st.file_uploader("Upload .docx or .pdf file", type=["docx", "pdf"])
@@ -33,7 +43,7 @@ def extract_text_from_pdf(file):
             text += page.get_text()
     return text
 
-def d2l_compliant_parse_questions(raw_text):
+def parse_all_question_types(raw_text):
     questions = []
     blocks = [b.strip() for b in raw_text.split("\n\n") if b.strip()]
     total = len(blocks)
@@ -41,7 +51,7 @@ def d2l_compliant_parse_questions(raw_text):
 
     for i, block in enumerate(blocks):
         lines = [l.strip() for l in block.split("\n") if l.strip()]
-        if len(lines) < 3:
+        if len(lines) < 2:
             questions.append(("❌ Too few lines to parse", block))
             continue
 
@@ -50,13 +60,12 @@ def d2l_compliant_parse_questions(raw_text):
             questions.append(("❌ Missing answer line", block))
             continue
 
-        answer_match = re.search(r"(?i)^answer[:\s]*([A-Da-d])", answer_line)
+        answer_match = re.search(r"(?i)^answer[:\s]*([A-Da-d]|.+)$", answer_line)
         if not answer_match:
-            questions.append(("❌ Could not extract answer letter", block))
+            questions.append(("❌ Could not extract answer", block))
             continue
 
-        correct_letter = answer_match.group(1).upper()
-
+        answer_val = answer_match.group(1).strip()
         try:
             answer_index = lines.index(answer_line)
         except ValueError:
@@ -64,21 +73,22 @@ def d2l_compliant_parse_questions(raw_text):
             continue
 
         question = lines[0]
-        choice_lines = lines[1:answer_index]
+        answer_lines = lines[1:answer_index]
 
-        if len(choice_lines) < 2:
-            questions.append(("❌ Not enough answer choices", block))
-            continue
-
-        q_rows = []
-        for j, choice in enumerate(choice_lines):
-            label = chr(65 + j)  # A, B, C...
-            full_choice = f"{label}) {choice}"
-            score = 100 if label == correct_letter else 0
-            if j == 0:
-                q_rows.append((question, score, full_choice))
-            else:
-                q_rows.append(("", score, full_choice))
+        if len(answer_lines) >= 2:
+            # MC/TF
+            q_rows = []
+            for j, choice in enumerate(answer_lines):
+                label = chr(65 + j)
+                full_choice = f"{label}) {choice}"
+                score = 100 if label.upper() == answer_val.upper() else 0
+                if j == 0:
+                    q_rows.append((question, score, full_choice))
+                else:
+                    q_rows.append(("", score, full_choice))
+        else:
+            # Fill-in-the-blank
+            q_rows = [(question, "", ""), ("", 100, answer_val)]
         questions.append(q_rows)
         progress.progress((i + 1) / total, text=f"Parsing {i+1}/{total}")
 
@@ -104,26 +114,30 @@ if uploaded_file:
 
     if st.button("🚀 Submit and Process File"):
         with st.spinner("Analyzing questions..."):
-            all_qs = d2l_compliant_parse_questions(raw_text)
+            all_qs = parse_all_question_types(raw_text)
             error_blocks = [q[1] for q in all_qs if isinstance(q, tuple)]
             valid_qs = [q for q in all_qs if isinstance(q, list)]
 
             if error_blocks:
-                st.warning("⚠️ Some questions had formatting issues. You can correct them below:")
+                st.warning("⚠️ Some questions had formatting issues. Fix them below:")
                 for i, block in enumerate(error_blocks):
                     new_text = st.text_area(f"✏️ Fix Block {i+1}", value=block, height=120)
                     if st.button(f"✅ Re-parse Block {i+1}", key=f"fix_{i}"):
-                        re_result = d2l_compliant_parse_questions(new_text)
+                        re_result = parse_all_question_types(new_text)
                         if any(isinstance(q, list) for q in re_result):
                             valid_qs.extend([q for q in re_result if isinstance(q, list)])
-                            st.success(f"✅ Block {i+1} re-parsed successfully.")
+                            st.success(f"✅ Block {i+1} re-parsed.")
                         else:
-                            st.error(f"Still invalid: {new_text}")
+                            st.error("❌ Still not valid.")
 
             if valid_qs:
-                rows = [row for group in valid_qs for row in group]
+                rows = []
+                for group in valid_qs:
+                    rows.extend(group)
+                    rows.append(("", "", ""))  # Optional blank row between questions
+
                 df = pd.DataFrame(rows, columns=["Question", "Points", "Answer Text"])
-                st.success("✅ Parsed questions preview:")
+                st.success("✅ Parsed D2L CSV Preview:")
                 st.dataframe(df, use_container_width=True)
 
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
