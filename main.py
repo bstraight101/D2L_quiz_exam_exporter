@@ -4,7 +4,6 @@ import fitz  # PyMuPDF
 from docx import Document
 import tempfile
 import re
-import time
 import os
 
 st.set_page_config(page_title="D2L Quiz and Exam CSV Exporter", layout="wide")
@@ -14,23 +13,17 @@ st.markdown("""
 This app allows faculty to upload `.docx` or `.pdf` files formatted with exam/quiz questions and export a **D2L-compliant CSV**.
 
 ### 📝 Input Format Instructions:
-1. **Each question must be numbered** (e.g., `1. What is ...`)
-2. **Each answer choice must start with a letter** (`A)`, `B)`, etc.)
-3. The correct answer must be labeled at the end with a line like: `Answer: C`
-4. Separate each question block with **one blank line**
+- Each question must be followed by 2+ answer choices.
+- The correct answer must be labeled on the last line of each block as `Answer C` or `Answer: C`.
+- Separate each question block with **one blank line**.
 
 #### ✅ Example:
-1.What is the capital of France?
-A) Berlin
-B) Madrid
-C) Paris
-D) Rome
-Answer: C
-
-### 🧼 Document Cleanup Tips:
-- Use **Ctrl+H** to find and replace `^p^p` with `^p` in Word
-- Remove double spaces with **Find:  ␣␣  Replace: ␣**
-- Convert PDFs to `.docx` for better accuracy
+Which is not a suggestion for doing an impromptu speech?  
+Pre-Planning  
+Be positive  
+Never apologize for mistakes  
+Read a written speech  
+Answer: D
 """)
 
 uploaded_file = st.file_uploader("Upload .docx or .pdf file", type=["docx", "pdf"])
@@ -46,44 +39,52 @@ def extract_text_from_pdf(file):
             text += page.get_text()
     return text
 
-def parse_questions(raw_text):
+def enhanced_parse_questions(raw_text):
     questions = []
     blocks = [b.strip() for b in raw_text.split("\n\n") if b.strip()]
     total = len(blocks)
     progress = st.progress(0, text="Parsing questions...")
 
     for i, block in enumerate(blocks):
-        lines = block.split("\n")
-        if not lines:
+        lines = [l.strip() for l in block.split("\n") if l.strip()]
+        if len(lines) < 3:
+            questions.append(("❌ Too few lines to parse", block))
             continue
 
-        q_match = re.match(r"^\d+[\.\)\-]\s*(.+)", lines[0])
-        if not q_match:
-            questions.append(("❌ Invalid question format", block))
-            continue
-
-        question = q_match.group(1).strip()
-        answer_line = next((l for l in lines if l.lower().startswith("answer:")), None)
+        answer_line = next((l for l in lines if re.match(r"(?i)^answer[:\s]", l)), None)
         if not answer_line:
             questions.append(("❌ Missing answer line", block))
             continue
 
-        answer_val = answer_line.split(":", 1)[1].strip()
-        choices = [l.strip() for l in lines[1:] if re.match(r"^[A-Da-d][\.\)\-]", l)]
+        answer_match = re.search(r"(?i)^answer[:\s]*([A-Da-d])", answer_line)
+        if not answer_match:
+            questions.append(("❌ Could not extract answer letter", block))
+            continue
 
-        if choices:
-            q_rows = [(question, "", "")]
-            correct_letter = answer_val.upper()
-            for choice in choices:
-                label = choice[0].upper()
-                score = 100 if label == correct_letter else 0
-                q_rows.append(("", score, choice))
-        else:
-            # fill-in-the-blank
-            q_rows = [(question, "", "")]
-            q_rows.append(("", 100, answer_val))
+        correct_letter = answer_match.group(1).upper()
+
+        try:
+            answer_index = lines.index(answer_line)
+        except ValueError:
+            questions.append(("❌ Couldn't locate answer line index", block))
+            continue
+
+        question = lines[0]
+        choice_lines = lines[1:answer_index]
+
+        if len(choice_lines) < 2:
+            questions.append(("❌ Not enough answer choices", block))
+            continue
+
+        q_rows = [(question, "", "")]
+        for j, choice in enumerate(choice_lines):
+            label = chr(65 + j)  # A, B, C, D
+            full_choice = f"{label}) {choice}"
+            score = 100 if label == correct_letter else 0
+            q_rows.append(("", score, full_choice))
         questions.append(q_rows)
         progress.progress((i + 1) / total, text=f"Parsing {i+1}/{total}")
+
     progress.empty()
     return questions
 
@@ -106,7 +107,7 @@ if uploaded_file:
 
     if st.button("🚀 Submit and Process File"):
         with st.spinner("Analyzing questions..."):
-            all_qs = parse_questions(raw_text)
+            all_qs = enhanced_parse_questions(raw_text)
             error_blocks = [q[1] for q in all_qs if isinstance(q, tuple)]
             valid_qs = [q for q in all_qs if isinstance(q, list)]
 
@@ -115,8 +116,7 @@ if uploaded_file:
                 for i, block in enumerate(error_blocks):
                     new_text = st.text_area(f"✏️ Fix Block {i+1}", value=block, height=120)
                     if st.button(f"✅ Re-parse Block {i+1}", key=f"fix_{i}"):
-                        re_result = parse_questions(new_text)
-                        # Replace only if parsing worked
+                        re_result = enhanced_parse_questions(new_text)
                         if any(isinstance(q, list) for q in re_result):
                             valid_qs.extend([q for q in re_result if isinstance(q, list)])
                             st.success(f"✅ Block {i+1} re-parsed successfully.")
