@@ -12,18 +12,12 @@ st.title("📤 D2L Quiz and Exam CSV Exporter")
 st.markdown("""
 This app allows faculty to upload `.docx` or `.pdf` files formatted with exam/quiz questions and export a **D2L-compliant CSV**.
 
-### 📝 Input Format Instructions:
-- Each question must be followed by 2+ answer choices.
-- The correct answer must be labeled on the last line of each block as `Answer C` or `Answer: C`.
-- Separate each question block with **one blank line**.
-
-#### ✅ Example:
-Which is not a suggestion for doing an impromptu speech?  
-Pre-Planning  
-Be positive  
-Never apologize for mistakes  
-Read a written speech  
-Answer: D
+### ✅ Format Tips:
+- Separate questions with one **blank line**.
+- Each block must include:
+    - A question
+    - 2 or more choices (no need to label)
+    - Last line as `Answer C` or `Answer: C` to mark correct
 """)
 
 uploaded_file = st.file_uploader("Upload .docx or .pdf file", type=["docx", "pdf"])
@@ -39,7 +33,7 @@ def extract_text_from_pdf(file):
             text += page.get_text()
     return text
 
-def enhanced_parse_questions(raw_text):
+def d2l_compliant_parse_questions(raw_text):
     questions = []
     blocks = [b.strip() for b in raw_text.split("\n\n") if b.strip()]
     total = len(blocks)
@@ -76,12 +70,15 @@ def enhanced_parse_questions(raw_text):
             questions.append(("❌ Not enough answer choices", block))
             continue
 
-        q_rows = [(question, "", "")]
+        q_rows = []
         for j, choice in enumerate(choice_lines):
-            label = chr(65 + j)  # A, B, C, D
+            label = chr(65 + j)  # A, B, C...
             full_choice = f"{label}) {choice}"
             score = 100 if label == correct_letter else 0
-            q_rows.append(("", score, full_choice))
+            if j == 0:
+                q_rows.append((question, score, full_choice))
+            else:
+                q_rows.append(("", score, full_choice))
         questions.append(q_rows)
         progress.progress((i + 1) / total, text=f"Parsing {i+1}/{total}")
 
@@ -107,7 +104,7 @@ if uploaded_file:
 
     if st.button("🚀 Submit and Process File"):
         with st.spinner("Analyzing questions..."):
-            all_qs = enhanced_parse_questions(raw_text)
+            all_qs = d2l_compliant_parse_questions(raw_text)
             error_blocks = [q[1] for q in all_qs if isinstance(q, tuple)]
             valid_qs = [q for q in all_qs if isinstance(q, list)]
 
@@ -116,7 +113,7 @@ if uploaded_file:
                 for i, block in enumerate(error_blocks):
                     new_text = st.text_area(f"✏️ Fix Block {i+1}", value=block, height=120)
                     if st.button(f"✅ Re-parse Block {i+1}", key=f"fix_{i}"):
-                        re_result = enhanced_parse_questions(new_text)
+                        re_result = d2l_compliant_parse_questions(new_text)
                         if any(isinstance(q, list) for q in re_result):
                             valid_qs.extend([q for q in re_result if isinstance(q, list)])
                             st.success(f"✅ Block {i+1} re-parsed successfully.")
