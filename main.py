@@ -1,36 +1,30 @@
 import streamlit as st
-import pandas as pd
 import fitz  # PyMuPDF
 from docx import Document
+import csv
 import tempfile
 import re
 import os
 
-st.set_page_config(page_title="D2L Quiz and Exam CSV Exporter", layout="wide")
+st.set_page_config(page_title="D2L Quiz Exporter", layout="wide")
 st.title("📤 D2L Quiz and Exam CSV Exporter")
 
 st.markdown("""
-Upload a `.docx` or `.pdf` file to generate a D2L-importable CSV for quizzes or exams.
+Upload a `.docx` or `.pdf` file to export a **D2L-compatible quiz CSV**.
 
-### ✅ Format Instructions
-- Separate each question block with a **blank line**
-- Multiple Choice / True-False example:
-    ```
-    What is the capital of France?
-    Berlin
-    Madrid
-    Paris
-    Rome
-    Answer: C
-    ```
-- Fill-in-the-blank example:
-    ```
-    Who developed the theory of relativity?
-    Answer: Einstein
-    ```
+### ✅ Formatting Guide:
+- Separate each question with **no extra space needed**
+- Each block should end with `Answer: X` (where X is A–D)
+- Example:
+What is the capital of France?
+Berlin
+Madrid
+Paris
+Rome
+Answer: C
 """)
 
-uploaded_file = st.file_uploader("Upload .docx or .pdf file", type=["docx", "pdf"])
+uploaded_file = st.file_uploader("Upload your quiz file", type=["docx", "pdf"])
 
 def extract_text_from_docx(file):
     doc = Document(file)
@@ -43,57 +37,57 @@ def extract_text_from_pdf(file):
             text += page.get_text()
     return text
 
-def parse_all_question_types(raw_text):
-    questions = []
-    blocks = [b.strip() for b in raw_text.split("\n\n") if b.strip()]
-    total = len(blocks)
-    progress = st.progress(0, text="Parsing questions...")
+def robust_block_parser(raw_text):
+    lines = [line.strip() for line in raw_text.splitlines() if line.strip()]
+    blocks = []
+    block = []
 
-    for i, block in enumerate(blocks):
+    for line in lines:
+        block.append(line)
+        if re.match(r"(?i)^answer[:\s]?", line):  # End of a question
+            blocks.append("\n".join(block))
+            block = []
+    return blocks
+
+def parse_to_d2l_format(raw_text):
+    blocks = robust_block_parser(raw_text)
+    rows = []
+    rows.append(["//MULTIPLE CHOICE QUESTION TYPE"])
+    rows.append(["//Options must include text in column3"])
+
+    for block in blocks:
         lines = [l.strip() for l in block.split("\n") if l.strip()]
-        if len(lines) < 2:
-            questions.append(("❌ Too few lines to parse", block))
+        if len(lines) < 3:
             continue
 
-        answer_line = next((l for l in lines if re.match(r"(?i)^answer[:\s]", l)), None)
+        answer_line = next((l for l in lines if re.match(r"(?i)^answer[:\s]?", l)), None)
         if not answer_line:
-            questions.append(("❌ Missing answer line", block))
             continue
 
-        answer_match = re.search(r"(?i)^answer[:\s]*([A-Da-d]|.+)$", answer_line)
+        answer_match = re.search(r"(?i)^answer[:\s]*([A-Da-d])", answer_line)
         if not answer_match:
-            questions.append(("❌ Could not extract answer", block))
             continue
 
-        answer_val = answer_match.group(1).strip()
+        correct_letter = answer_match.group(1).upper()
         try:
             answer_index = lines.index(answer_line)
         except ValueError:
-            questions.append(("❌ Couldn't locate answer line index", block))
             continue
 
         question = lines[0]
-        answer_lines = lines[1:answer_index]
+        choices = lines[1:answer_index]
 
-        if len(answer_lines) >= 2:
-            # MC/TF
-            q_rows = []
-            for j, choice in enumerate(answer_lines):
-                label = chr(65 + j)
-                full_choice = f"{label}) {choice}"
-                score = 100 if label.upper() == answer_val.upper() else 0
-                if j == 0:
-                    q_rows.append((question, score, full_choice))
-                else:
-                    q_rows.append(("", score, full_choice))
-        else:
-            # Fill-in-the-blank
-            q_rows = [(question, "", ""), ("", 100, answer_val)]
-        questions.append(q_rows)
-        progress.progress((i + 1) / total, text=f"Parsing {i+1}/{total}")
+        rows.append(["NewQuestion", "MC"])
+        rows.append(["QuestionText", question])
 
-    progress.empty()
-    return questions
+        for idx, choice in enumerate(choices):
+            label = chr(65 + idx)
+            score = "100" if label == correct_letter else "0"
+            rows.append(["Option", score, choice])
+
+        rows.append([])  # Blank line between questions
+
+    return rows
 
 if uploaded_file:
     ext = uploaded_file.name.split(".")[-1].lower()
@@ -108,44 +102,24 @@ if uploaded_file:
         st.error("Unsupported file type.")
         st.stop()
 
-    st.subheader("📄 Raw Text Preview")
-    with st.expander("Click to view extracted text"):
-        st.text_area("Extracted Text", value=raw_text, height=300)
+    st.subheader("📄 Preview Extracted Text")
+    with st.expander("Show raw extracted content"):
+        st.text_area("Raw Text", value=raw_text, height=300)
 
-    if st.button("🚀 Submit and Process File"):
-        with st.spinner("Analyzing questions..."):
-            all_qs = parse_all_question_types(raw_text)
-            error_blocks = [q[1] for q in all_qs if isinstance(q, tuple)]
-            valid_qs = [q for q in all_qs if isinstance(q, list)]
+    if st.button("🚀 Generate D2L CSV"):
+        with st.spinner("Parsing and generating CSV..."):
+            d2l_rows = parse_to_d2l_format(raw_text)
 
-            if error_blocks:
-                st.warning("⚠️ Some questions had formatting issues. Fix them below:")
-                for i, block in enumerate(error_blocks):
-                    new_text = st.text_area(f"✏️ Fix Block {i+1}", value=block, height=120)
-                    if st.button(f"✅ Re-parse Block {i+1}", key=f"fix_{i}"):
-                        re_result = parse_all_question_types(new_text)
-                        if any(isinstance(q, list) for q in re_result):
-                            valid_qs.extend([q for q in re_result if isinstance(q, list)])
-                            st.success(f"✅ Block {i+1} re-parsed.")
-                        else:
-                            st.error("❌ Still not valid.")
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
+                with open(tmp.name, "w", newline='') as f:
+                    writer = csv.writer(f, quoting=csv.QUOTE_ALL)
+                    writer.writerows(d2l_rows)
 
-            if valid_qs:
-                rows = []
-                for group in valid_qs:
-                    rows.extend(group)
-                    rows.append(("", "", ""))  # Optional blank row between questions
-
-                df = pd.DataFrame(rows, columns=["Question", "Points", "Answer Text"])
-                st.success("✅ Parsed D2L CSV Preview:")
-                st.dataframe(df, use_container_width=True)
-
-                with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
-                    df.to_csv(tmp.name, index=False)
-                    with open(tmp.name, "rb") as f:
-                        st.download_button(
-                            label="⬇️ Download CSV for D2L",
-                            data=f,
-                            file_name=f"{filename_base}_d2l_export.csv",
-                            mime="text/csv"
-                        )
+                with open(tmp.name, "rb") as f:
+                    st.download_button(
+                        label="⬇️ Download D2L Quiz CSV",
+                        data=f,
+                        file_name=f"{filename_base}_D2L_quiz.csv",
+                        mime="text/csv"
+                    )
+            st.success("✅ CSV created successfully!")
