@@ -6,22 +6,28 @@ import tempfile
 import re
 import os
 
-st.set_page_config(page_title="D2L Quiz Exporter", layout="wide")
+st.set_page_config(page_title="D2L Quiz and Exam CSV Exporter", layout="wide")
 st.title("📤 D2L Quiz and Exam CSV Exporter")
 
 st.markdown("""
-Upload a `.docx` or `.pdf` file to export a **D2L-compatible quiz CSV**.
+Upload a `.docx` or `.pdf` file and convert your questions to a **D2L-compatible CSV**.
 
-### ✅ Formatting Guide:
-- Separate each question with **no extra space needed**
-- Each block should end with `Answer: X` (where X is A–D)
-- Example:
+### ✅ Supported Formats:
+**Multiple Choice**
+
 What is the capital of France?
 Berlin
 Madrid
 Paris
 Rome
 Answer: C
+
+**True/False**
+The sky is blue.
+True
+False
+Answer: A
+
 """)
 
 uploaded_file = st.file_uploader("Upload your quiz file", type=["docx", "pdf"])
@@ -44,16 +50,14 @@ def robust_block_parser(raw_text):
 
     for line in lines:
         block.append(line)
-        if re.match(r"(?i)^answer[:\s]?", line):  # End of a question
+        if re.match(r"(?i)^answer[:\s]?", line):  # end of a question
             blocks.append("\n".join(block))
             block = []
     return blocks
 
-def parse_to_d2l_format(raw_text):
+def parse_mc_and_tf_questions(raw_text):
     blocks = robust_block_parser(raw_text)
     rows = []
-    rows.append(["//MULTIPLE CHOICE QUESTION TYPE"])
-    rows.append(["//Options must include text in column3"])
 
     for block in blocks:
         lines = [l.strip() for l in block.split("\n") if l.strip()]
@@ -64,11 +68,11 @@ def parse_to_d2l_format(raw_text):
         if not answer_line:
             continue
 
-        answer_match = re.search(r"(?i)^answer[:\s]*([A-Da-d])", answer_line)
+        answer_match = re.search(r"(?i)^answer[:\s]*(.+)", answer_line)
         if not answer_match:
             continue
 
-        correct_letter = answer_match.group(1).upper()
+        answer_val = answer_match.group(1).strip()
         try:
             answer_index = lines.index(answer_line)
         except ValueError:
@@ -77,13 +81,27 @@ def parse_to_d2l_format(raw_text):
         question = lines[0]
         choices = lines[1:answer_index]
 
-        rows.append(["NewQuestion", "MC"])
-        rows.append(["QuestionText", question])
+        if len(choices) == 2 and set(c.lower() for c in choices) == {"true", "false"}:
+            # True/False detected
+            rows.append(["//TRUE / FALSE QUESTION TYPE"])
+            rows.append(["NewQuestion", "TF"])
+            rows.append(["QuestionText", question])
 
-        for idx, choice in enumerate(choices):
-            label = chr(65 + idx)
-            score = "100" if label == correct_letter else "0"
-            rows.append(["Option", score, choice])
+            for choice in choices:
+                label = choice.upper()
+                score = "100" if label == answer_val.upper() else "0"
+                rows.append([label, score])
+        else:
+            # Multiple Choice
+            rows.append(["//MULTIPLE CHOICE QUESTION TYPE"])
+            rows.append(["//Options must include text in column3"])
+            rows.append(["NewQuestion", "MC"])
+            rows.append(["QuestionText", question])
+
+            for idx, choice in enumerate(choices):
+                label = chr(65 + idx)
+                score = "100" if label.upper() == answer_val.upper() else "0"
+                rows.append(["Option", score, choice])
 
         rows.append([])  # Blank line between questions
 
@@ -102,13 +120,13 @@ if uploaded_file:
         st.error("Unsupported file type.")
         st.stop()
 
-    st.subheader("📄 Preview Extracted Text")
-    with st.expander("Show raw extracted content"):
-        st.text_area("Raw Text", value=raw_text, height=300)
+    st.subheader("📄 Extracted Text")
+    with st.expander("Click to view text content"):
+        st.text_area("Text Preview", value=raw_text, height=300)
 
     if st.button("🚀 Generate D2L CSV"):
-        with st.spinner("Parsing and generating CSV..."):
-            d2l_rows = parse_to_d2l_format(raw_text)
+        with st.spinner("Parsing questions..."):
+            d2l_rows = parse_mc_and_tf_questions(raw_text)
 
             with tempfile.NamedTemporaryFile(delete=False, suffix=".csv") as tmp:
                 with open(tmp.name, "w", newline='') as f:
@@ -117,9 +135,9 @@ if uploaded_file:
 
                 with open(tmp.name, "rb") as f:
                     st.download_button(
-                        label="⬇️ Download D2L Quiz CSV",
+                        label="⬇️ Download D2L-Compatible CSV",
                         data=f,
-                        file_name=f"{filename_base}_D2L_quiz.csv",
+                        file_name=f"{filename_base}_D2L_export.csv",
                         mime="text/csv"
                     )
-            st.success("✅ CSV created successfully!")
+        st.success("✅ CSV created successfully!")
